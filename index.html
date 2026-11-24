@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f9f3e8">
+  <meta name="description" content="SCIENCEGAMES เกมเปิดภาพ 25 ช่อง เรียนรู้การปฐมพยาบาล RICE พร้อมเฉลยและบันทึกคะแนนในเครื่อง">
+  <title>SCIENCEGAMES · RICE</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/setup.png" as="image">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="game.js"></script>
+  <script defer src="questions.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main id="stage" aria-label="SCIENCEGAMES เกมปฐมพยาบาล RICE">
+    <section id="setup-screen" class="screen" aria-label="ตั้งค่าเกม">
+      <img class="screen-art" src="assets/setup.png" alt="" draggable="false">
+      <h1 class="sr-only">SCIENCEGAMES</h1>
+      <form id="setup-form">
+        <label class="sr-only" for="player-name">ชื่อผู้เล่น</label>
+        <input id="player-name" class="placed name-input" name="player" placeholder="NEME" maxlength="24" autocomplete="nickname" required aria-describedby="name-error" data-box="480,496,711,78">
+        <p id="name-error" class="placed input-error" data-box="480,576,710,25" aria-live="polite"></p>
+        <button id="avatar-prev" class="placed image-button" type="button" data-box="591,317,66,59" aria-label="เลือกตัวละครก่อนหน้า"></button>
+        <button id="avatar-next" class="placed image-button" type="button" data-box="1011,317,66,59" aria-label="เลือกตัวละครถัดไป"></button>
+        <div id="setup-avatar" class="placed avatar-override" data-box="701,216,263,263" aria-hidden="true" hidden></div>
+        <button id="time-plus" class="placed image-button" type="button" data-box="780,595,82,76" aria-label="เพิ่มเวลา 5 วินาที"></button>
+        <output id="setup-time" class="placed outlined setup-time" data-box="874,595,142,76" aria-live="polite">30 S</output>
+        <button id="time-minus" class="placed image-button" type="button" data-box="1026,595,83,76" aria-label="ลดเวลา 5 วินาที"></button>
+        <button id="start-game" class="placed image-button start-button" type="submit" data-box="465,682,740,110" aria-label="เริ่มเกม"></button>
+      </form>
+      <button id="resume-game" class="placed resume-button" data-box="499,839,674,49" hidden></button>
+    </section>
+    <section id="board-screen" class="screen" aria-label="กระดานคำถาม 25 ช่อง" hidden>
+      <img class="screen-art" src="assets/board-open.png" alt="" draggable="false">
+      <h2 class="sr-only">เลือกช่องคำถาม</h2>
+      <output id="elapsed" class="placed elapsed" data-box="840,46,174,49" aria-label="เวลารวมคงเหลือ">15 M 00S</output>
+      <div id="profile-avatar" class="placed profile-avatar avatar-override" data-box="1054,33,75,71" aria-hidden="true" hidden></div>
+      <p id="profile-name" class="placed profile-name" data-box="1141,36,150,34"></p>
+      <output id="score" class="placed score" data-box="1140,73,157,29" aria-label="คะแนนรวม">คะแนน : 0</output>
+      <button id="exit-game" class="placed image-button" data-box="1299,31,61,76" aria-label="ออกจากกระดานและบันทึกเกม"></button>
+      <div id="tiles" role="group" aria-label="คำถาม 25 ช่อง เรียงคะแนน 500 ถึง 100"></div>
+      <button id="view-result" class="placed result-link" data-box="700,902,276,30" hidden>ดูผลคะแนน</button>
+    </section>
+    <section id="question-screen" class="screen" aria-label="ตอบคำถามถูกหรือผิด" hidden>
+      <img class="screen-art" src="assets/question.png" alt="" draggable="false">
+      <output id="question-time" class="placed question-time" data-box="1310,57,150,68" aria-label="เวลาคงเหลือ">30 S</output>
+      <div class="placed question-area" data-box="285,237,1090,314">
+        <h2 id="question-text" tabindex="-1"></h2>
+      </div>
+      <button id="answer-true" class="placed image-button answer-button" data-box="210,713,616,196" aria-label="ตอบว่าถูก"></button>
+      <button id="answer-false" class="placed image-button answer-button" data-box="845,713,615,196" aria-label="ตอบว่าผิด"></button>
+    </section>
+    <dialog id="feedback-dialog" aria-labelledby="feedback-title">
+      <p id="feedback-points" class="eyebrow"></p>
+      <h2 id="feedback-title"></h2>
+      <p id="feedback-answer" class="answer-line"></p>
+      <p id="feedback-explanation"></p>
+      <a id="feedback-source" href="https://www.nhs.uk/conditions/sprains-and-strains/" target="_blank" rel="noopener noreferrer">อ่านแหล่งอ้างอิง</a>
+      <button id="feedback-next" class="solid-button">กลับสู่กระดาน</button>
+    </dialog>
+    <dialog id="finish-dialog" aria-labelledby="finish-title">
+      <p id="finish-reason" class="eyebrow">เปิดภาพครบ 25 ช่องแล้ว</p>
+      <h2 id="finish-title">จบเกมแล้ว!</h2>
+      <p id="finish-player"></p>
+      <p id="finish-score" class="finish-score"></p>
+      <p id="finish-stats"></p>
+      <button id="finish-view" class="solid-button">ดูภาพที่เปิดครบแล้ว</button>
+      <button id="finish-new" class="text-button">เริ่มเกมใหม่</button>
+    </dialog>
+    <div id="status" class="sr-only" role="status" aria-live="polite"></div>
+    <p id="storage-notice" class="storage-notice" hidden>เบราว์เซอร์นี้ไม่อนุญาตให้บันทึกเกม กำลังเล่นโดยไม่บันทึก</p>
+  </main>
+  <p class="rotate-hint">หมุนหน้าจอเป็นแนวนอนเพื่อเล่นได้สะดวกขึ้น</p>
+  <noscript>โปรดเปิด JavaScript เพื่อเล่น SCIENCEGAMES</noscript>
+</body>
+</html>
