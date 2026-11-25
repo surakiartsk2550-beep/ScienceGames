@@ -1,18 +1,36 @@
-(function(){
+(function () {
 'use strict';
-const {VERSION,MAX_SCORE,GAME_DURATION_MS,clampTime,pointsFor,createGame,scoreOf,completed,ended,remainingGameSeconds,expireGame,openQuestion,answerQuestion,restoreGame}=globalThis.RICEGame;
-const QUESTIONS=globalThis.RICE_QUESTIONS;
-const $=id=>document.getElementById(id);
-const SAVE_KEY='sciencegames.rice.v1';
-const HISTORY_KEY='sciencegames.rice.history.v1';
-const PREFS_KEY='sciencegames.rice.preferences.v1';
-let game=null,seconds=30,avatar=0,feedbackId=null,screen='setup',storageAvailable=true;
-const screens={setup:$('setup-screen'),board:$('board-screen'),question:$('question-screen')};
-function read(key){try{return JSON.parse(localStorage.getItem(key));}catch{return null;}}
-function save(key,value){try{localStorage.setItem(key,JSON.stringify(value));}catch{storageAvailable=false;$('storage-notice').hidden=false;}}
-function persist(){if(game)save(SAVE_KEY,game);}
-function announce(message){$('status').textContent=message;}
-function show(name){screen=name;for(const [key,el] of Object.entries(screens))el.hidden=key!==name;}
+const { TEAM_IDS, pointsFor, createGame, teamScores, ended, remainingGameSeconds,
+  expireGame, openQuestion, revealAnswer, awardQuestion, restoreGame } = globalThis.RICEGame;
+const questions = globalThis.RICE_QUESTIONS;
+const $ = id => document.getElementById(id);
+const SAVE = 'RICE RALLY.rice.teams.v2';
+const PREFS = SAVE + '.names';
+const HISTORY = SAVE + '.history';
+const feedback = $('feedback-dialog');
+const finish = $('finish-dialog');
+const race = $('race-dialog');
+let raceTimer;
+let game = null;
+let screen = 'setup';
+function read(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch { $('storage-notice').hidden = false; }
+}
+function persist() { save(SAVE, game); }
+function show(name) {
+  screen = name;
+  for (const section of ['setup', 'board', 'question']) $(section + '-screen').hidden = section !== name;
+}
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text;
+  return node;
+}
 function place(el,x,y,w,h){Object.assign(el.style,{left:`${x/1672*100}%`,top:`${y/941*100}%`,width:`${w/1672*100}%`,height:`${h/941*100}%`});}
 document.querySelectorAll('[data-box]').forEach(el=>place(el,...el.dataset.box.split(',').map(Number)));
 const cols=[[307,205],[520,205],[733,206],[946,205],[1159,206]];
@@ -25,111 +43,289 @@ for(let id=0;id<25;id++){
   Object.assign(art.style,{width:`${1672/w*100}%`,height:`${941/h*100}%`,left:`${-x/w*100}%`,top:`${-y/h*100}%`});button.append(art);
   button.addEventListener('click',()=>choose(id));$('tiles').append(button);tiles.push(button);
 }
-function avatarStyle(el,value){
-  el.hidden=value===0;if(value===0)return;
-  // The two optional avatars are crops of the approved RICE master illustration.
-  // Each is presented through a CSS viewport; source artwork remains unchanged.
-  const crop=value===1?{x:295,y:430,size:337}:{x:927,y:548,size:208};
-  Object.assign(el.style,{backgroundSize:`${1432/crop.size*100}% ${1099/crop.size*100}%`,backgroundPosition:`${crop.x/(1432-crop.size)*100}% ${crop.y/(1099-crop.size)*100}%`});
+
+const fields = [];
+const prefs = read(PREFS);
+document.querySelectorAll('.start-doctor').forEach(doctor => {
+  doctor.append($('runner-art').content.cloneNode(true));
+});
+TEAM_IDS.forEach((id, i) => {
+  const label = element('label', 'team-field', '');
+  label.dataset.team = id;
+  const input = document.createElement('input');
+  input.placeholder = 'กลุ่ม ' + id;
+  input.maxLength = 24;
+  input.setAttribute('aria-label', 'ชื่อกลุ่ม ' + id);
+  input.value = typeof prefs?.[i] === 'string' ? prefs[i] : '';
+  label.append(element('span', 'letter', id), input);
+  $('team-fields').append(label);
+  fields.push(input);
+});
+function updateResume() {
+  const saved = restoreGame(read(SAVE)) || game;
+  $('resume-game').hidden = !saved;
+  if (saved) $('resume-game').textContent = ended(saved) || !remainingGameSeconds(saved)
+    ? 'ดูผลเกมล่าสุด' : 'เล่นต่อ · เปิดแล้ว ' + saved.answers.filter(Boolean).length + ' / 25 ช่อง';
 }
-function updateSettings(){
-  $('setup-time').textContent=`${seconds} S`;$('time-plus').disabled=seconds>=60;$('time-minus').disabled=seconds<=5;
-  avatarStyle($('setup-avatar'),avatar);
-  save(PREFS_KEY,{seconds,avatar,name:$('player-name').value});
+function teamRow(tag, className, id, name, amount) {
+  const row = element(tag, className, '');
+  row.dataset.team = id;
+  row.title = name + ' · ' + amount + ' คะแนน';
+  row.append(element('b', 'letter', id), element('span', 'score-name-full', name), element('strong', 'score-number-full', amount));
+  return row;
 }
-function changeTime(step){seconds=clampTime(seconds+step);updateSettings();}
-$('time-plus').addEventListener('click',()=>changeTime(5));$('time-minus').addEventListener('click',()=>changeTime(-5));
-$('avatar-prev').addEventListener('click',()=>{avatar=(avatar+2)%3;updateSettings();announce(`เลือกตัวละคร ${avatar+1} จาก 3`);});
-$('avatar-next').addEventListener('click',()=>{avatar=(avatar+1)%3;updateSettings();announce(`เลือกตัวละคร ${avatar+1} จาก 3`);});
-$('player-name').addEventListener('input',()=>{$('name-error').textContent='';$('player-name').setCustomValidity('');updateSettings();});
-$('player-name').addEventListener('invalid',()=>{$('name-error').textContent='กรุณาใส่ชื่อผู้เล่นก่อนเริ่มเกม';});
-function updateResume(){const saved=restoreGame(read(SAVE_KEY));$('resume-game').hidden=!saved;if(saved)$('resume-game').textContent=`${ended(saved)?'ดูเกมล่าสุด':'เล่นต่อ'} · ${saved.name} · ${scoreOf(saved).toLocaleString('th-TH')} คะแนน`;}
-function newGame(){
-  const name=$('player-name').value.trim();
-  if(!name){$('name-error').textContent='กรุณาใส่ชื่อผู้เล่นก่อนเริ่มเกม';$('player-name').setCustomValidity('กรุณาใส่ชื่อผู้เล่น');$('player-name').reportValidity();return;}
-  game=createGame(name,seconds,avatar);persist();renderBoard();show('board');tiles[0].focus({preventScroll:true});
+function renderBoard() {
+  const scores = teamScores(game);
+  $('scores').replaceChildren(...TEAM_IDS.map((id, i) => {
+    const row = teamRow('div', 'score-chip', id, game.teams[i], scores[id].toLocaleString('th-TH'));
+    row.children[1].className = 'score-name';
+    row.lastChild.className = 'score-number';
+    return row;
+  }));
+  tiles.forEach((tile, id) => {
+    const opened = !!game.answers[id];
+    tile.classList.toggle('opened', opened);
+    tile.disabled = opened || ended(game);
+    tile.setAttribute('aria-label', 'ช่อง ' + (id % 5 + 1) + ' แถว ' + pointsFor(id) + ' คะแนน' + (opened ? ' เปิดแล้ว' : ''));
+  });
+  $('view-result').hidden = !ended(game);
+  show('board');
+  updateClock();
 }
-$('setup-form').addEventListener('submit',event=>{event.preventDefault();const saved=restoreGame(read(SAVE_KEY));if(saved)expireGame(saved);if(saved&&!ended(saved)&&!ended(game||saved)){
-  if(!window.confirm('เริ่มเกมใหม่และแทนที่เกมที่บันทึกไว้หรือไม่? หากต้องการเล่นต่อ กด “ยกเลิก” แล้วเลือก “เล่นต่อ”'))return;
-}newGame();});
-function renderBoard(){
-  if(!game)return;
-  $('profile-name').textContent=game.name;$('profile-name').title=game.name;
-  $('score').textContent=`คะแนน : ${scoreOf(game).toLocaleString('th-TH')}`;
-  avatarStyle($('profile-avatar'),game.avatar);
-  for(let id=0;id<25;id++){const opened=!!game.answers[id];tiles[id].classList.toggle('opened',opened);tiles[id].disabled=opened||ended(game);tiles[id].setAttribute('aria-label',opened?`ช่อง ${id+1} เปิดภาพแล้ว`:`ช่อง ${id+1} ${ended(game)?'ยังไม่เปิด จบเกมแล้ว':`คำถาม ${pointsFor(id)} คะแนน`}`);}
-  $('view-result').hidden=!ended(game);tick();
+function updateClock() {
+  const seconds = remainingGameSeconds(game);
+  const time = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  $('elapsed').textContent = time;
+  $('question-time').textContent = time;
 }
-function choose(id){const now=Date.now();if(!game||finishIfExpired(now)||!openQuestion(game,id,now))return;persist();showQuestion();}
-function showQuestion(){
-  if(!game?.active)return;
-  const {id}=game.active;$('question-text').textContent=QUESTIONS[id].text;
-  $('answer-true').disabled=false;$('answer-false').disabled=false;show('question');tick();
-  $('question-text').focus({preventScroll:true});
+function recordHistory() {
+  const history = read(HISTORY);
+  const entries = Array.isArray(history) ? history.filter(row => row.startedAt !== game.startedAt) : [];
+  entries.unshift({teams: game.teams, scores: teamScores(game), startedAt: game.startedAt, finishedAt: game.finishedAt});
+  save(HISTORY, entries.slice(0, 20));
 }
-function submitAnswer(value){
-  const now=Date.now();if(finishIfExpired(now))return;
-  if(!game?.active)return;
-  const id=game.active.id,q=QUESTIONS[id];const result=answerQuestion(game,value,q.answer,now);if(!result)return;
-  $('answer-true').disabled=true;$('answer-false').disabled=true;persist();feedbackId=id;
-  const earned=result.correct?pointsFor(id):0;
-  $('feedback-points').textContent=result.correct?`+${earned} คะแนน`:'ข้อนี้ได้ 0 คะแนน';
-  $('feedback-title').textContent=result.timedOut?'หมดเวลาแล้ว':result.correct?'ตอบถูกแล้ว!':'ยังไม่ถูก ลองเรียนรู้จากเฉลยกัน';
-  $('feedback-answer').textContent=`ข้อความนี้ “${q.answer?'ถูก':'ผิด'}”`;
-  $('feedback-explanation').textContent=q.explanation;
-  $('feedback-source').href=q.source;$('feedback-source').textContent=q.source.includes('nhs.uk')?'อ้างอิง: NHS':'อ้างอิง: St John Ambulance';
-  if(!$('feedback-dialog').open)$('feedback-dialog').showModal();
-  announce(result.timedOut?'หมดเวลา ได้ 0 คะแนน':result.correct?`ตอบถูก ได้ ${earned} คะแนน`:'ตอบผิด ได้ 0 คะแนน');
-  if(completed(game))recordHistory();
-}
-$('answer-true').addEventListener('click',()=>submitAnswer(true));$('answer-false').addEventListener('click',()=>submitAnswer(false));
-$('feedback-dialog').addEventListener('cancel',event=>{event.preventDefault();leaveFeedback();});
-$('feedback-next').addEventListener('click',leaveFeedback);
-function leaveFeedback(){
-  if(finishIfExpired())return;
-  $('feedback-dialog').close();const id=feedbackId;feedbackId=null;renderBoard();show('board');
-  if(id!==null){tiles[id].classList.add('revealing');setTimeout(()=>tiles[id].classList.remove('revealing'),500);}
-  const next=tiles.find(tile=>!tile.disabled);if(next)next.focus({preventScroll:true});
-  if(ended(game))showFinish();
-}
-function recordHistory(){const old=read(HISTORY_KEY);const history=Array.isArray(old)?old:[];if(!history.some(item=>item.startedAt===game.startedAt)){history.unshift({name:game.name,score:scoreOf(game),correct:game.answers.filter(a=>a?.correct).length,seconds:game.seconds,startedAt:game.startedAt,finishedAt:game.finishedAt,endReason:game.endReason||'completed'});save(HISTORY_KEY,history.slice(0,20));}}
-function showFinish(){
-  const outOfTime=game.endReason==='time-limit';
-  $('finish-reason').textContent=outOfTime?'หมดเวลาเล่น 15 นาทีแล้ว':'เปิดภาพครบ 25 ช่องแล้ว';
-  $('finish-title').textContent=outOfTime?'หมดเวลา จบเกมแล้ว!':'จบเกมแล้ว!';
-  $('finish-view').textContent=completed(game)?'ดูภาพที่เปิดครบแล้ว':'ดูกระดานและคะแนน';
-  $('finish-player').textContent=game.name;$('finish-score').textContent=`${scoreOf(game).toLocaleString('th-TH')} / ${MAX_SCORE.toLocaleString('th-TH')}`;
-  const correct=game.answers.filter(a=>a?.correct).length,timeout=game.answers.filter(a=>a?.timedOut).length;
-  const unanswered=game.answers.filter(a=>!a).length;
-  $('finish-stats').textContent=`ตอบถูก ${correct} ข้อ · ตอบผิด ${25-unanswered-correct-timeout} ข้อ · หมดเวลา ${timeout} ข้อ${unanswered?` · ยังไม่เปิด ${unanswered} ข้อ`:''}`;
-  if(!$('finish-dialog').open)$('finish-dialog').showModal();
-}
-$('finish-view').addEventListener('click',()=>$('finish-dialog').close());$('view-result').addEventListener('click',showFinish);
-$('finish-new').addEventListener('click',()=>{$('finish-dialog').close();game=null;updateResume();show('setup');$('player-name').focus();});
-$('exit-game').addEventListener('click',()=>{persist();updateResume();show('setup');});
-$('resume-game').addEventListener('click',()=>{game=restoreGame(read(SAVE_KEY));if(!game){updateResume();return;}renderBoard();if(game.active)showQuestion();else{show('board');if(ended(game))showFinish();}});
-function finishIfExpired(now=Date.now()){
-  if(!game)return false;
-  if(expireGame(game,now)){
-    persist();recordHistory();feedbackId=null;$('feedback-dialog').close();
-    if(screen==='setup')updateResume();
-    else{show('board');renderBoard();showFinish();announce('หมดเวลาเล่น 15 นาที จบเกมแล้ว');}
+function renderPodium(standings) {
+  const winners = standings.filter(team => team.rank <= 3);
+  const stage = $('awards-stage');
+  stage.hidden = standings[0].score === 0;
+  if (stage.hidden) { $('podium').replaceChildren(); return; }
+
+  // Put the champion in the middle. Shared places have identical steps and cups.
+  const gold = winners.filter(team => team.rank === 1);
+  const others = winners.filter(team => team.rank !== 1);
+  const middle = Math.ceil(others.length / 2);
+  const positions = [...others.slice(0, middle), ...gold, ...others.slice(middle)];
+  $('podium').replaceChildren(...positions.map(({id, name, rank, score}) => {
+    const step = element('div', 'podium-step', '');
+    step.dataset.team = id;
+    step.dataset.place = rank;
+    const cup = ['ทอง', 'เงิน', 'ทองแดง'][rank - 1];
+    step.setAttribute('role', 'img');
+    step.setAttribute('aria-label', name + ' อันดับ ' + rank + ' ถ้วย' + cup + ' ' + score + ' คะแนน');
+    step.title = step.getAttribute('aria-label');
+    const platform = element('div', 'platform', '');
+    const label = element('div', 'podium-team', '');
+    label.append(element('b', 'letter', id), element('span', 'podium-name', name));
+    platform.append(element('strong', 'place-number', rank), label);
+    step.append($('runner-art').content.cloneNode(true), platform);
+    return step;
+  }));
+  if (!$('celebration').childElementCount) {
+    for (let i = 0; i < 24; i++) {
+      const piece = document.createElement('i');
+      piece.style.left = ((i * 37 + 4) % 100) + '%';
+      piece.style.setProperty('--delay', (i % 7) * .075 + 's');
+      piece.style.setProperty('--tilt', (i % 2 ? 1 : -1) * (16 + i * 3) + 'deg');
+      $('celebration').append(piece);
+    }
   }
-  return game.endReason==='time-limit';
 }
-function tick(){
-  if(!game)return;
-  const now=Date.now(),remainingTotal=remainingGameSeconds(game,now);
-  $('elapsed').textContent=`${Math.floor(remainingTotal/60)} M ${String(remainingTotal%60).padStart(2,'0')}S`;
-  if(finishIfExpired(now))return;
-  if(screen==='question'&&game.active){const remaining=Math.max(0,Math.ceil((game.active.deadline-now)/1000));$('question-time').textContent=`${remaining} S`;$('question-time').classList.toggle('urgent',remaining<=5);if(remaining===0)submitAnswer(null);}
+function showFinish() {
+  const scores = teamScores(game);
+  $('finish-reason').textContent = game.endReason === 'time-limit' ? 'หมดเวลา 15 นาที' : 'เปิดครบทั้ง 25 ช่องแล้ว';
+  const order = TEAM_IDS.map((id, i) => ({id, name: game.teams[i], score: scores[id]}))
+    .sort((a, b) => b.score - a.score);
+  for (const entry of order) entry.rank = order.findIndex(other => other.score === entry.score) + 1;
+  renderPodium(order);
+  $('ranking').replaceChildren(...order.map(({id, name, rank, score}) => {
+    const row = teamRow('li', 'rank-row', id, name, score.toLocaleString('th-TH') + ' คะแนน');
+    const place = element('span', 'rank-position', rank);
+    place.setAttribute('aria-label', 'อันดับ ' + rank);
+    row.prepend(place);
+    return row;
+  }));
+  if (!finish.open) finish.showModal();
 }
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick();});
-window.addEventListener('pagehide',persist);setInterval(tick,150);
-const prefs=read(PREFS_KEY);if(prefs){seconds=clampTime(prefs.seconds);avatar=[0,1,2].includes(prefs.avatar)?prefs.avatar:0;$('player-name').value=typeof prefs.name==='string'?prefs.name.slice(0,24):'';}
-updateSettings();updateResume();show('setup');
-// Preload gameplay images so a click never reveals a blank transition.
-for(const src of ['board-open.png','board-closed.png','question.png','characters.png']){const image=new Image();image.src=`assets/${src}`;}
-
+function checkDeadline(now = Date.now()) {
+  if (expireGame(game, now)) {
+    persist();
+    recordHistory();
+    feedback.close();
+    closeRace();
+    if (screen === 'setup') updateResume();
+    else { renderBoard(); showFinish(); }
+  }
+  return ended(game);
+}
+function choose(id) {
+  const now = Date.now();
+  if (!game || checkDeadline(now) || !openQuestion(game, id, now)) return;
+  persist();
+  showQuestion();
+}
+function showQuestion() {
+  const {id} = game.active;
+  const q = questions[id];
+  $('question-points').textContent = pointsFor(id) + ' คะแนน · ช่อง ' + (id % 5 + 1);
+  $('question-text').textContent = q.text;
+  $('question-options').hidden = !q.options;
+  $('question-options').replaceChildren(...(q.options || []).map(option => {
+    const row = document.createElement('li');
+    const split = option.indexOf(' ');
+    row.append(element('b', '', option.slice(0, split)), element('span', '', option.slice(split + 1)));
+    return row;
+  }));
+  const photo = $('question-photo');
+  photo.hidden = !q.image;
+  if (q.image) { photo.src = q.image; photo.alt = q.alt; }
+  else { photo.removeAttribute('src'); photo.alt = ''; }
+  $('question-content').classList.toggle('has-photo', !!q.image);
+  $('question-content').classList.toggle('has-options', !!q.options);
+  show('question');
+  updateClock();
+  $('question-text').focus({preventScroll: true});
+  if (game.active.revealed) showAnswer();
+}
+function showAnswer() {
+  const id = game.active.id;
+  const q = questions[id];
+  $('feedback-points').textContent = pointsFor(id) + ' คะแนน · ช่อง ' + (id % 5 + 1);
+  $('feedback-answer').textContent = q.answer;
+  $('feedback-source').hidden = !q.source;
+  if (q.source) $('feedback-source').href = q.source;
+  $('award-teams').replaceChildren(...TEAM_IDS.map((team, i) => {
+    const button = teamRow('button', 'team-action', team, game.teams[i], '+' + pointsFor(id));
+    button.onclick = () => award(team);
+    return button;
+  }));
+  if (!feedback.open) feedback.showModal();
+}
+function award(team) {
+  const now = Date.now();
+  if (!game?.active || checkDeadline(now)) return;
+  const points = pointsFor(game.active.id);
+  if (!awardQuestion(game, team, now)) return;
+  persist();
+  feedback.close();
+  renderBoard();
+  if (ended(game)) recordHistory();
+  if (team) showRace(team, points);
+  else afterAward();
+}
+function afterAward() {
+  if (ended(game)) showFinish();
+  else tiles.find(tile => !tile.disabled)?.focus({preventScroll: true});
+}
+function closeRace() {
+  clearTimeout(raceTimer);
+  if (race.open) race.close();
+}
+function leaveRace() {
+  if (!race.open) return;
+  closeRace();
+  if (checkDeadline() && finish.open) return;
+  afterAward();
+}
+function showRace(team, points) {
+  const scores = teamScores(game);
+  const maxPoints = game.answers.reduce((sum, _, cell) => sum + pointsFor(cell), 0);
+  const finishScore = ended(game) ? Math.max(...Object.values(scores)) : maxPoints;
+  // A square-root scale makes the first few awards visible, even on a narrow track.
+  const progress = (score, limit) => (100 * Math.sqrt(score / limit)).toFixed(3) + '%';
+  const lanes = TEAM_IDS.map((id, i) => {
+    const lane = element('li', 'race-lane', '');
+    lane.dataset.team = id;
+    const name = game.teams[i];
+    const label = element('div', 'race-label', '');
+    label.title = name;
+    label.append(element('b', 'letter', id), element('span', 'race-name', name));
+    const rail = element('div', 'race-rail', '');
+    const position = element('div', 'race-position', '');
+    const previous = id === team ? scores[id] - points : scores[id];
+    const start = progress(previous, maxPoints);
+    const end = progress(scores[id], finishScore);
+    position.style.setProperty('--from', start);
+    position.style.setProperty('--to', end);
+    position.classList.toggle('moving', start !== end);
+    position.append($('runner-art').content.cloneNode(true));
+    rail.append(position);
+    lane.classList.toggle('awarded', id === team);
+    lane.append(label, rail, element('strong', 'lane-score', scores[id].toLocaleString('th-TH')));
+    return lane;
+  });
+  $('race-lanes').replaceChildren(...lanes);
+  $('race-title').textContent = game.teams[TEAM_IDS.indexOf(team)] + ' ได้คะแนน!';
+  $('race-gain').textContent = '+' + points;
+  $('race-next').textContent = ended(game) ? 'ดูผลคะแนน' : 'กลับสู่กระดาน';
+  race.showModal();
+  raceTimer = setTimeout(leaveRace, 3500);
+}
+$('race-next').onclick = leaveRace;
+race.addEventListener('cancel', event => { event.preventDefault(); leaveRace(); });
+$('setup-form').onsubmit = event => {
+  event.preventDefault();
+  const previous = restoreGame(read(SAVE)) || game;
+  if (previous && !ended(previous) && remainingGameSeconds(previous) > 0 &&
+      !window.confirm('เริ่มรอบใหม่แทนรอบที่กำลังเล่นอยู่หรือไม่?')) return;
+  const names = fields.map(input => input.value.trim());
+  save(PREFS, names);
+  game = createGame(names);
+  persist();
+  renderBoard();
+};
+$('reveal').onclick = () => {
+  const now = Date.now();
+  if (checkDeadline(now) || !revealAnswer(game, now)) return;
+  persist();
+  showAnswer();
+};
+feedback.addEventListener('cancel', event => event.preventDefault());
+$('skip').onclick = () => award(null);
+function goToSetup() {
+  updateResume();
+  show('setup');
+  fields[0].focus({preventScroll: true});
+}
+$('exit-game').onclick = goToSetup;
+$('view-result').onclick = showFinish;
+$('finish-view').onclick = () => finish.close();
+$('finish-new').onclick = () => { finish.close(); goToSetup(); };
+$('resume-game').onclick = () => {
+  game = restoreGame(read(SAVE)) || game;
+  if (!game) return;
+  if (expireGame(game)) { persist(); recordHistory(); }
+  renderBoard();
+  if (ended(game)) showFinish();
+  else if (game.active) showQuestion();
+};
+function tick() {
+  if (!game || ended(game)) return;
+  if (!checkDeadline() && screen !== 'setup') updateClock();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+window.addEventListener('storage', event => {
+  if (event.key !== SAVE) return;
+  const latest = restoreGame(read(SAVE));
+  if (!latest) return;
+  game = latest;
+  if (screen === 'setup') { updateResume(); return; }
+  feedback.close();
+  finish.close();
+  closeRace();
+  renderBoard();
+  if (checkDeadline()) showFinish();
+  else if (game.active) showQuestion();
+});
+setInterval(tick, 250);
+updateResume();
 })();
-

@@ -1,56 +1,81 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {clampTime,createGame,scoreOf,completed,openQuestion,answerQuestion,restoreGame,pointsFor,MAX_SCORE} from './load-game.mjs';
-import {QUESTIONS} from './load-game.mjs';
-import {GAME_DURATION_MS,ended,remainingGameSeconds,expireGame} from './load-game.mjs';
-
-test('game counts down from 15 minutes and clamps at zero',()=>{
-  const g=createGame('A',30,0,1000);
-  assert.equal(remainingGameSeconds(g,1000),900);
-  assert.equal(remainingGameSeconds(g,2000),899);
-  assert.equal(remainingGameSeconds(g,1000+GAME_DURATION_MS-1),1);
-  assert.equal(remainingGameSeconds(g,1000+GAME_DURATION_MS),0);
-  assert.equal(remainingGameSeconds(g,1000+GAME_DURATION_MS+10000),0);
+import {existsSync} from 'node:fs';
+import {game, questions} from './load-game.mjs';
+const {createGame, openQuestion, revealAnswer, awardQuestion, teamScores, restoreGame,
+       remainingGameSeconds, expireGame, GAME_DURATION_MS} = game;
+const round = () => createGame(['ดิน', '', 'น้ำ', 'ลม', 'ไฟ'], 0);
+test('all five editable team slots have a usable default', () => {
+  assert.deepEqual([...round().teams], ['ดิน', 'กลุ่ม B', 'น้ำ', 'ลม', 'ไฟ']);
 });
-test('total deadline ends an unfinished board without giving or losing points',()=>{
-  const g=createGame('A',30,0,1000);openQuestion(g,0,1000);answerQuestion(g,true,true,2000);
-  assert.equal(expireGame(g,1000+GAME_DURATION_MS-1),false);
-  assert.equal(expireGame(g,1000+GAME_DURATION_MS),true);
-  assert.equal(ended(g),true);assert.equal(completed(g),false);
-  assert.equal(scoreOf(g),500);assert.equal(g.finishedAt,1000+GAME_DURATION_MS);
-  assert.equal(g.endReason,'time-limit');assert.equal(g.answers.filter(Boolean).length,1);
-  assert.equal(openQuestion(g,1,1000+GAME_DURATION_MS+1),false);
-  assert.equal(expireGame(g,1000+GAME_DURATION_MS+2),false);
+test('revealing and assigning are distinct, persistent steps; a tile scores once', () => {
+  const g = round();
+  assert.ok(openQuestion(g, 20, 100));
+  assert.equal(awardQuestion(g, 'A', 200), false);
+  assert.equal(openQuestion(g, 21, 300), false);
+  assert.ok(revealAnswer(g, 120000));
+  const resumed = restoreGame(JSON.parse(JSON.stringify(g)));
+  assert.deepEqual({...resumed.active}, {id: 20, revealed: true});
+  assert.equal(awardQuestion(resumed, 'F', 121000), false);
+  assert.ok(awardQuestion(resumed, 'B', 121000));
+  assert.equal(awardQuestion(resumed, 'A', 121000), false);
+  assert.equal(openQuestion(resumed, 20, 121000), false);
+  assert.deepEqual({...teamScores(resumed)}, {A:0, B:100, C:0, D:0, E:0});
 });
-test('total deadline wins over a still-running question and rejects a late correct answer',()=>{
-  const g=createGame('A',60,0,0);openQuestion(g,2,GAME_DURATION_MS-1000);
-  assert.equal(answerQuestion(g,true,true,GAME_DURATION_MS),null);
-  assert.equal(g.active,null);assert.equal(g.answers[2].timedOut,true);
-  assert.equal(scoreOf(g),0);assert.equal(ended(g),true);
+test('skip opens the tile without awarding points', () => {
+  const g = round();
+  openQuestion(g, 4, 0); revealAnswer(g, 1);
+  assert.ok(awardQuestion(g, null, 2));
+  assert.ok(g.answers[4]);
+  assert.equal(Object.values(teamScores(g)).reduce((a,b) => a+b), 0);
 });
-test('total deadline survives reload, including older saves without a new deadline field',()=>{
-  const original=createGame('A',30,0,1000);openQuestion(original,3,2000);
-  const saved=restoreGame(JSON.parse(JSON.stringify(original)));
-  assert.equal(remainingGameSeconds(saved,61000),840);
-  assert.equal(expireGame(saved,1000+GAME_DURATION_MS+10000),true);
-  assert.equal(remainingGameSeconds(saved,1000+GAME_DURATION_MS+20000),0);
-  const endedSave=restoreGame(JSON.parse(JSON.stringify(saved)));
-  assert.equal(endedSave.endReason,'time-limit');assert.equal(ended(endedSave),true);
+test('15-minute deadline takes priority on board, in question and in award dialog', () => {
+  for (const phase of ['board','question','award']) {
+    const g = round();
+    openQuestion(g, 0, 0); revealAnswer(g, 1); awardQuestion(g, 'E', 2);
+    if (phase !== 'board') openQuestion(g, 1, 300);
+    if (phase === 'award') revealAnswer(g, 301);
+    assert.equal(remainingGameSeconds(g, 0), 900);
+    assert.equal(remainingGameSeconds(g, GAME_DURATION_MS - 1), 1);
+    assert.ok(expireGame(g, GAME_DURATION_MS));
+    assert.equal(remainingGameSeconds(g, GAME_DURATION_MS + 999), 0);
+    assert.equal(awardQuestion(g, 'E', GAME_DURATION_MS), false);
+    assert.equal(openQuestion(g, 2, GAME_DURATION_MS), false);
+    assert.equal(g.active, null);
+    assert.equal(teamScores(g).E, 500);
+    assert.equal(restoreGame(JSON.parse(JSON.stringify(g))).endReason, 'time-limit');
+  }
 });
-test('finishing all questions early freezes remaining game time',()=>{
-  const g=createGame('A',30,0,0);
-  for(let id=0;id<25;id++){openQuestion(g,id,id*100);answerQuestion(g,true,true,id*100+1);}
-  const remaining=remainingGameSeconds(g,3000);
-  assert.equal(expireGame(g,GAME_DURATION_MS+1000),false);
-  assert.equal(remainingGameSeconds(g,GAME_DURATION_MS+1000),remaining);
-  assert.equal(scoreOf(g),MAX_SCORE);
+test('all cells reveal, aggregate across five teams is 7500, clock freezes', () => {
+  const g = round();
+  for (let id = 0; id < 25; id++) {
+    openQuestion(g, id, 500); revealAnswer(g, 510);
+    assert.ok(awardQuestion(g, game.TEAM_IDS[id % 5], 520));
+  }
+  assert.equal(g.endReason, 'completed');
+  assert.deepEqual(Object.values(teamScores(g)), [1500,1500,1500,1500,1500]);
+  assert.equal(g.finishedAt, 520);
+  assert.ok(!expireGame(g, GAME_DURATION_MS));
 });
-test('time settings clamp to 5–60 in five-second increments',()=>{assert.equal(clampTime(0),30);assert.equal(clampTime(-5),5);assert.equal(clampTime(65),60);for(let n=5;n<=60;n+=5)assert.equal(clampTime(n),n);});
-test('points reflect row and total is 7500',()=>{assert.deepEqual([0,5,10,15,20].map(pointsFor),[500,400,300,200,100]);assert.equal(Array.from({length:25},(_,i)=>pointsFor(i)).reduce((a,b)=>a+b),MAX_SCORE);});
-test('correct, incorrect and timed-out questions all reveal, award only once',()=>{const g=createGame('นักเรียน',5,0,1000);openQuestion(g,0,1000);assert.equal(answerQuestion(g,true,true,2000).correct,true);assert.equal(scoreOf(g),500);assert.equal(answerQuestion(g,true,true,2200),null);assert.equal(openQuestion(g,0,2500),false);openQuestion(g,5,3000);assert.equal(answerQuestion(g,false,true,4000).correct,false);openQuestion(g,10,5000);const expired=answerQuestion(g,true,true,10000);assert.equal(expired.timedOut,true);assert.equal(expired.selection,null);assert.equal(scoreOf(g),500);assert.ok(g.answers[0]&&g.answers[5]&&g.answers[10]);});
-test('cannot open another question while one is active',()=>{const g=createGame('A',30);assert.equal(openQuestion(g,1),true);assert.equal(openQuestion(g,2),false);assert.equal(g.active.id,1);});
-test('deadline survives save/restore and expires after reload',()=>{const g=createGame('A',5,0,100);openQuestion(g,3,100);const restored=restoreGame(JSON.parse(JSON.stringify(g)));assert.equal(restored.active.deadline,5100);assert.equal(answerQuestion(restored,false,false,6000).timedOut,true);assert.equal(scoreOf(restored),0);});
-test('completion freezes finished time and reveals every cell',()=>{const g=createGame('A',5,0,0);for(let id=0;id<25;id++){openQuestion(g,id,id*100);answerQuestion(g,true,true,id*100+1);}assert.equal(completed(g),true);assert.equal(scoreOf(g),MAX_SCORE);assert.equal(g.finishedAt,2401);assert.equal(restoreGame(JSON.parse(JSON.stringify(g))).answers.length,25);});
-test('invalid saved state is rejected',()=>{assert.equal(restoreGame({}),null);const g=createGame('A',5);g.active={id:26,deadline:0};assert.equal(restoreGame(g),null);});
-test('25 questions have boolean answers, explanations and primary sources',()=>{assert.equal(QUESTIONS.length,25);for(const q of QUESTIONS){assert.equal(typeof q.answer,'boolean');assert.ok(q.text&&q.explanation);assert.match(q.source,/^https:\/\/www\.(nhs\.uk|sja\.org\.uk)\//);}});
-
+test('all learning content present in board order, correct letters and four bundled images', () => {
+  assert.equal(questions.length, 25);
+  for (const q of questions) assert.ok(q.text && q.answer);
+  const expected = {7:'C',10:'ข',11:'ก',13:'ค',15:'ข',16:'ค',17:'ข',18:'ข',19:'ก',24:'ก'};
+  for (const [id, letter] of Object.entries(expected)) {
+    assert.equal(questions[id].options.length, 4);
+    assert.ok(questions[id].options.includes(questions[id].answer));
+    assert.ok(questions[id].answer.startsWith(letter + '.'));
+  }
+  for (let i = 0; i < 4; i++) {
+    const q = questions[i+20];
+    assert.equal(q.image, 'assets/question-100-' + (i+1) + '.jpg');
+    assert.equal(q.text, 'ภาพนี้เป็นขั้นตอนใดในหลักการ R.I.C.E');
+    assert.equal(q.answer.split(' ')[0], ['Rest','Compression','Elevation','Ice'][i]);
+    assert.ok(q.alt && existsSync(new URL('../' + q.image, import.meta.url)));
+  }
+});
+test('invalid, legacy and corrupt records cannot become active team games', () => {
+  assert.equal(restoreGame({version: 1}), null);
+  const g = round(); g.answers[0] = {team: 'unknown'};
+  assert.equal(restoreGame(g), null);
+});
